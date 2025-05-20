@@ -20,7 +20,6 @@ import (
 	ratev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ratelimit/v3"
 	envoyhttp "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	envoy_matcher_v3 "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
-	"github.com/solo-io/go-utils/contextutils"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -49,6 +48,7 @@ import (
 	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/utils"
 	"github.com/kgateway-dev/kgateway/v2/internal/kgateway/wellknown"
 	"github.com/kgateway-dev/kgateway/v2/pkg/client/clientset/versioned"
+	"github.com/kgateway-dev/kgateway/v2/pkg/logging"
 )
 
 const (
@@ -63,6 +63,8 @@ const (
 	localRateLimitStatPrefix                    = "http_local_rate_limiter"
 	rateLimitFilterNamePrefix                   = "ratelimit"
 )
+
+var logger = logging.New("plugin/trafficpolicy")
 
 func extAuthFilterName(name string) string {
 	if name == "" {
@@ -370,7 +372,10 @@ func NewPlugin(ctx context.Context, commoncol *common.CommonCollections) extensi
 
 	useRustformations = commoncol.Settings.UseRustFormations // stash the state of the env setup for rustformation usage
 
-	col := krt.WrapClient(kclient.New[*v1alpha1.TrafficPolicy](commoncol.Client), commoncol.KrtOpts.ToOptions("TrafficPolicy")...)
+	col := krt.WrapClient(kclient.NewFiltered[*v1alpha1.TrafficPolicy](
+		commoncol.Client,
+		kclient.Filter{ObjectFilter: commoncol.Client.ObjectFilter()},
+	), commoncol.KrtOpts.ToOptions("TrafficPolicy")...)
 	gk := wellknown.TrafficPolicyGVK.GroupKind()
 
 	gatewayExtensions := krt.NewCollection(commoncol.GatewayExtensions, TranslateGatewayExtensionBuilder(commoncol))
@@ -681,13 +686,13 @@ func (p *trafficPolicyPluginGwPass) ApplyForRoute(ctx context.Context, pCtx *ir.
 			if !ok {
 				// AI policy cannot apply to kubernetes services
 				// TODO(npolshak): Report this as a warning on status
-				contextutils.LoggerFrom(ctx).Warnf("targetRef cannot apply to %s backend. AI TrafficPolicy must apply only to AI backend", backend.Backend.BackendObject.GetName())
+				logger.Warn("AI Policy cannot apply to kubernetes services", "backend_name", backend.Backend.BackendObject.GetName())
 				continue
 			}
 			if b.Spec.Type != v1alpha1.BackendTypeAI {
 				// AI policy cannot apply to non-AI backends
 				// TODO(npolshak): Report this as a warning on status
-				contextutils.LoggerFrom(ctx).Warnf("backend %s is of type %s. AI TrafficPolicy must apply only to AI backend", backend.Backend.BackendObject.GetName(), b.Spec.Type)
+				logger.Warn("AI Policy cannot apply to non-AI backend", "backend_name", backend.Backend.BackendObject.GetName(), "backend_type", string(b.Spec.Type))
 				continue
 			}
 			aiBackends = append(aiBackends, b)
@@ -768,7 +773,7 @@ func (p *trafficPolicyPluginGwPass) ApplyForRouteBackend(
 		err := p.processAITrafficPolicy(&pCtx.TypedFilterConfig, rtPolicy.spec.AI)
 		if err != nil {
 			// TODO: report error on status
-			contextutils.LoggerFrom(ctx).Errorf("error while processing AI TrafficPolicy: %v", err)
+			logger.Error("error while processing AI TrafficPolicy", "error", err)
 			return err
 		}
 	}
@@ -1151,7 +1156,7 @@ func TrafficPolicyBuilder(
 		rateLimitForSpec(commoncol, krtctx, policyCR, &outSpec, gatewayExtensions)
 
 		for _, err := range errors {
-			contextutils.LoggerFrom(ctx).Error(policyCR.GetNamespace(), policyCR.GetName(), err)
+			logger.Error("error translating policy", "namespace", policyCR.GetNamespace(), "name", policyCR.GetName(), "error", err)
 		}
 		policyIr.spec = outSpec
 
@@ -1183,7 +1188,7 @@ func aiSecretForSpec(
 	// Retrieve and assign the secret
 	secret, err := pluginutils.GetSecretIr(secrets, krtctx, secretRef.Name, policyCR.GetNamespace())
 	if err != nil {
-		contextutils.LoggerFrom(ctx).Error(err)
+		logger.Error("failed to get secret for AI policy", "secret_name", secretRef.Name, "namespace", policyCR.GetNamespace(), "error", err)
 		return nil, err
 	}
 	return secret, nil
