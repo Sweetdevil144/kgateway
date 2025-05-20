@@ -2,12 +2,14 @@ package statsutils_test
 
 import (
 	"context"
-	statsutils "github.com/kgateway-dev/kgateway/v2/pkg/utils/statsutils"
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
-	"time"
+
+	statsutils "github.com/kgateway-dev/kgateway/v2/pkg/utils/statsutils"
 )
 
 var _ = Describe("StopWatch", func() {
